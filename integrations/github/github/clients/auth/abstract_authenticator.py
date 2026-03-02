@@ -111,9 +111,7 @@ class AbstractGitHubAuthenticator(ABC):
         try:
             url = f"{github_host}/users/{organization}"
             headers = kwargs.get("headers")
-            response = await self.client.get(
-                url, **({"headers": headers} if headers else {})
-            )
+            response = await self.client.get(url, headers=headers)
             response.raise_for_status()
             user_data = response.json()
             return user_data["type"] == "User"

@@ -70,8 +70,7 @@ class GitHubAppAuthenticator(AbstractGitHubAuthenticator):
                 self.github_host, self.organization, headers=jwt_headers
             ):
                 url = f"{self.github_host}/users/{self.organization}/installation"
-            headers = {"Authorization": f"Bearer {jwt_token}"}
-            response = await self.client.get(url, headers=headers)
+            response = await self.client.get(url, headers=jwt_headers)
             response.raise_for_status()
             return str(response.json()["id"])
         except Exception as e:

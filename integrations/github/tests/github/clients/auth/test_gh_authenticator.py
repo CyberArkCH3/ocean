@@ -1,4 +1,5 @@
 from datetime import datetime, timedelta, timezone
+from typing import Any
 import pytest
 import httpx
 from unittest.mock import AsyncMock, Mock, patch, PropertyMock
@@ -203,7 +204,7 @@ class TestGithubAuthenticator:
 
             expected_url = f"{github_auth.github_host}/orgs/{github_auth.organization}/installation"
             mock_client.get.assert_called_once_with(
-                expected_url, headers=jwt_headers
+                expected_url, headers=jwt_headers,
             )
 
             assert installation_id == mock_installation_id
@@ -244,10 +245,161 @@ class TestGithubAuthenticator:
 
             expected_url = f"{github_auth.github_host}/users/{github_auth.organization}/installation"
             mock_client.get.assert_called_once_with(
-                expected_url, headers=jwt_headers
+                expected_url, headers=jwt_headers,
             )
 
             assert installation_id == mock_installation_id
+
+    async def test_is_personal_org_ghe_returns_403_without_auth_headers(
+        self, github_auth: GitHubAppAuthenticator
+    ) -> None:
+        """GHE instances that require auth return 403 for unauthenticated
+        requests.  Without headers is_personal_org must still return False
+        (not hang in a retry loop)."""
+        mock_client = AsyncMock()
+        mock_response = Mock(status_code=403)
+        mock_response.raise_for_status = Mock(
+            side_effect=httpx.HTTPStatusError(
+                "403 Forbidden",
+                request=Mock(),
+                response=mock_response,
+            )
+        )
+        mock_client.get.return_value = mock_response
+
+        with patch.object(
+            type(github_auth),
+            "client",
+            new_callable=PropertyMock,
+            return_value=mock_client,
+        ):
+            result = await github_auth.is_personal_org(
+                "https://api.atpco.ghe.com", "DevopsZone",
+            )
+
+        assert result is False
+
+    async def test_is_personal_org_ghe_returns_401_without_auth_headers(
+        self, github_auth: GitHubAppAuthenticator
+    ) -> None:
+        """GHE can also return 401 for unauthenticated requests.
+        is_personal_org must return False gracefully."""
+        mock_client = AsyncMock()
+        mock_response = Mock(status_code=401)
+        mock_response.raise_for_status = Mock(
+            side_effect=httpx.HTTPStatusError(
+                "401 Unauthorized",
+                request=Mock(),
+                response=mock_response,
+            )
+        )
+        mock_client.get.return_value = mock_response
+
+        with patch.object(
+            type(github_auth),
+            "client",
+            new_callable=PropertyMock,
+            return_value=mock_client,
+        ):
+            result = await github_auth.is_personal_org(
+                "https://api.atpco.ghe.com", "PublicCloudPlatform",
+            )
+
+        assert result is False
+
+    async def test_is_personal_org_ghe_succeeds_with_auth_headers(
+        self, github_auth: GitHubAppAuthenticator
+    ) -> None:
+        """With valid auth headers, GHE returns 200 and is_personal_org
+        resolves correctly."""
+        mock_client = AsyncMock()
+        mock_response = Mock()
+        mock_response.json = Mock(return_value={"type": "Organization"})
+        mock_response.raise_for_status = Mock()
+        mock_client.get.return_value = mock_response
+
+        jwt_headers = {"Authorization": "Bearer test-jwt"}
+
+        with patch.object(
+            type(github_auth),
+            "client",
+            new_callable=PropertyMock,
+            return_value=mock_client,
+        ):
+            result = await github_auth.is_personal_org(
+                "https://api.atpco.ghe.com",
+                "DevopsZone",
+                headers=jwt_headers,
+            )
+
+        assert result is False
+        mock_client.get.assert_called_once_with(
+            "https://api.atpco.ghe.com/users/DevopsZone",
+            headers=jwt_headers,
+        )
+
+    async def test_fetch_installation_id_passes_jwt_to_is_personal_org(
+        self,
+    ) -> None:
+        """End-to-end: _fetch_installation_id passes JWT headers to
+        is_personal_org so the /users/{org} check is authenticated,
+        preventing the 403 retry loop on GHE."""
+        auth = GitHubAppAuthenticator(
+            organization="DevopsZone",
+            github_host="https://api.atpco.ghe.com",
+            app_id="app-id",
+            private_key="test-key",
+        )
+
+        jwt_token = "test-jwt-token"
+        jwt_headers = {"Authorization": f"Bearer {jwt_token}"}
+
+        mock_client = AsyncMock()
+        user_response = Mock()
+        user_response.json = Mock(return_value={"type": "Organization"})
+        user_response.raise_for_status = Mock()
+
+        install_response = Mock()
+        install_response.json = Mock(return_value={"id": "99999"})
+        install_response.raise_for_status = Mock()
+
+        def route_get(url: str, **kwargs: Any) -> Mock:
+            if "/users/" in url:
+                if kwargs.get("headers") != jwt_headers:
+                    resp = Mock(status_code=403)
+                    resp.raise_for_status = Mock(
+                        side_effect=httpx.HTTPStatusError(
+                            "403 Forbidden",
+                            request=Mock(),
+                            response=resp,
+                        )
+                    )
+                    return resp
+                return user_response
+            return install_response
+
+        mock_client.get = AsyncMock(side_effect=route_get)
+
+        with patch.object(
+            type(auth),
+            "client",
+            new_callable=PropertyMock,
+            return_value=mock_client,
+        ):
+            installation_id = await auth._fetch_installation_id(jwt_token)
+
+        assert installation_id == "99999"
+
+        calls = mock_client.get.call_args_list
+        assert len(calls) == 2
+
+        personal_org_call = calls[0]
+        assert personal_org_call.args[0] == "https://api.atpco.ghe.com/users/DevopsZone"
+        assert personal_org_call.kwargs["headers"] == jwt_headers
+
+        install_call = calls[1]
+        assert install_call.args[0] == "https://api.atpco.ghe.com/orgs/DevopsZone/installation"
+        assert install_call.kwargs["headers"] == jwt_headers
 
     async def test_client_returns_same_instance(
         self, github_auth: GitHubAppAuthenticator
