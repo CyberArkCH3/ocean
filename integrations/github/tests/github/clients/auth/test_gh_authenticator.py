@@ -250,75 +250,17 @@ class TestGithubAuthenticator:
 
             assert installation_id == mock_installation_id
 
-    async def test_is_personal_org_ghe_returns_403_without_auth_headers(
+    async def test_is_personal_org_sends_auth_headers(
         self, github_auth: GitHubAppAuthenticator
     ) -> None:
-        """GHE instances that require auth return 403 for unauthenticated
-        requests.  Without headers is_personal_org must still return False
-        (not hang in a retry loop)."""
-        mock_client = AsyncMock()
-        mock_response = Mock(status_code=403)
-        mock_response.raise_for_status = Mock(
-            side_effect=httpx.HTTPStatusError(
-                "403 Forbidden",
-                request=Mock(),
-                response=mock_response,
-            )
-        )
-        mock_client.get.return_value = mock_response
-
-        with patch.object(
-            type(github_auth),
-            "client",
-            new_callable=PropertyMock,
-            return_value=mock_client,
-        ):
-            result = await github_auth.is_personal_org(
-                "https://api.atpco.ghe.com", "DevopsZone",
-            )
-
-        assert result is False
-
-    async def test_is_personal_org_ghe_returns_401_without_auth_headers(
-        self, github_auth: GitHubAppAuthenticator
-    ) -> None:
-        """GHE can also return 401 for unauthenticated requests.
-        is_personal_org must return False gracefully."""
-        mock_client = AsyncMock()
-        mock_response = Mock(status_code=401)
-        mock_response.raise_for_status = Mock(
-            side_effect=httpx.HTTPStatusError(
-                "401 Unauthorized",
-                request=Mock(),
-                response=mock_response,
-            )
-        )
-        mock_client.get.return_value = mock_response
-
-        with patch.object(
-            type(github_auth),
-            "client",
-            new_callable=PropertyMock,
-            return_value=mock_client,
-        ):
-            result = await github_auth.is_personal_org(
-                "https://api.atpco.ghe.com", "PublicCloudPlatform",
-            )
-
-        assert result is False
-
-    async def test_is_personal_org_ghe_succeeds_with_auth_headers(
-        self, github_auth: GitHubAppAuthenticator
-    ) -> None:
-        """With valid auth headers, GHE returns 200 and is_personal_org
-        resolves correctly."""
+        """Verify is_personal_org forwards auth headers to the HTTP request."""
         mock_client = AsyncMock()
         mock_response = Mock()
         mock_response.json = Mock(return_value={"type": "Organization"})
         mock_response.raise_for_status = Mock()
         mock_client.get.return_value = mock_response
 
-        jwt_headers = {"Authorization": "Bearer test-jwt"}
+        headers = {"Authorization": "Bearer test-jwt"}
 
         with patch.object(
             type(github_auth),
@@ -327,23 +269,97 @@ class TestGithubAuthenticator:
             return_value=mock_client,
         ):
             result = await github_auth.is_personal_org(
-                "https://api.atpco.ghe.com",
-                "DevopsZone",
-                headers=jwt_headers,
+                "https://api.ghe.example.com",
+                "MyOrg",
+                headers=headers,
             )
 
         assert result is False
         mock_client.get.assert_called_once_with(
-            "https://api.atpco.ghe.com/users/DevopsZone",
-            headers=jwt_headers,
+            "https://api.ghe.example.com/users/MyOrg",
+            headers=headers,
         )
+
+    async def test_is_personal_org_returns_true_for_user(
+        self, github_auth: GitHubAppAuthenticator
+    ) -> None:
+        """Verify is_personal_org returns True when GitHub reports type User."""
+        mock_client = AsyncMock()
+        mock_response = Mock()
+        mock_response.json = Mock(return_value={"type": "User"})
+        mock_response.raise_for_status = Mock()
+        mock_client.get.return_value = mock_response
+
+        with patch.object(
+            type(github_auth),
+            "client",
+            new_callable=PropertyMock,
+            return_value=mock_client,
+        ):
+            result = await github_auth.is_personal_org(
+                "https://api.github.com",
+                "my-user",
+                headers={"Authorization": "Bearer tok"},
+            )
+
+        assert result is True
+
+    async def test_is_personal_org_caches_by_host_and_org(
+        self, github_auth: GitHubAppAuthenticator
+    ) -> None:
+        """Verify the result is cached per (host, org) regardless of headers."""
+        mock_client = AsyncMock()
+        mock_response = Mock()
+        mock_response.json = Mock(return_value={"type": "Organization"})
+        mock_response.raise_for_status = Mock()
+        mock_client.get.return_value = mock_response
+
+        with patch.object(
+            type(github_auth),
+            "client",
+            new_callable=PropertyMock,
+            return_value=mock_client,
+        ):
+            result1 = await github_auth.is_personal_org(
+                "https://ghe.example.com", "Org",
+                headers={"Authorization": "Bearer jwt-1"},
+            )
+            result2 = await github_auth.is_personal_org(
+                "https://ghe.example.com", "Org",
+                headers={"Authorization": "Bearer jwt-2"},
+            )
+
+        assert result1 is False
+        assert result2 is False
+        mock_client.get.assert_called_once()
+
+    async def test_is_personal_org_returns_false_on_error(
+        self, github_auth: GitHubAppAuthenticator
+    ) -> None:
+        """Verify is_personal_org returns False when the request fails."""
+        mock_client = AsyncMock()
+        mock_client.get.side_effect = httpx.HTTPStatusError(
+            "forbidden", request=Mock(), response=Mock(status_code=403)
+        )
+
+        with patch.object(
+            type(github_auth),
+            "client",
+            new_callable=PropertyMock,
+            return_value=mock_client,
+        ):
+            result = await github_auth.is_personal_org(
+                "https://ghe.example.com", "Org",
+                headers={"Authorization": "Bearer tok"},
+            )
+
+        assert result is False
 
     async def test_fetch_installation_id_passes_jwt_to_is_personal_org(
         self,
     ) -> None:
-        """End-to-end: _fetch_installation_id passes JWT headers to
-        is_personal_org so the /users/{org} check is authenticated,
-        preventing the 403 retry loop on GHE."""
+        """End-to-end: _fetch_installation_id passes JWT headers through
+        to is_personal_org so the /users/{org} check is authenticated."""
         auth = GitHubAppAuthenticator(
             organization="DevopsZone",
             github_host="https://api.atpco.ghe.com",
@@ -352,7 +368,6 @@ class TestGithubAuthenticator:
         )
 
         jwt_token = "test-jwt-token"
-        jwt_headers = {"Authorization": f"Bearer {jwt_token}"}
 
         mock_client = AsyncMock()
         user_response = Mock()
@@ -365,16 +380,6 @@ class TestGithubAuthenticator:
 
         def route_get(url: str, **kwargs: Any) -> Mock:
             if "/users/" in url:
-                if kwargs.get("headers") != jwt_headers:
-                    resp = Mock(status_code=403)
-                    resp.raise_for_status = Mock(
-                        side_effect=httpx.HTTPStatusError(
-                            "403 Forbidden",
-                            request=Mock(),
-                            response=resp,
-                        )
-                    )
-                    return resp
                 return user_response
             return install_response
 
@@ -390,6 +395,7 @@ class TestGithubAuthenticator:
 
         assert installation_id == "99999"
 
+        jwt_headers = {"Authorization": f"Bearer {jwt_token}"}
         calls = mock_client.get.call_args_list
         assert len(calls) == 2
 
