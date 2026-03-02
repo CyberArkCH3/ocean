@@ -65,7 +65,10 @@ class GitHubAppAuthenticator(AbstractGitHubAuthenticator):
     async def _fetch_installation_id(self, jwt_token: str) -> str:
         try:
             url = f"{self.github_host}/orgs/{self.organization}/installation"
-            if await self.is_personal_org(self.github_host, self.organization):
+            jwt_headers = {"Authorization": f"Bearer {jwt_token}"}
+            if await self.is_personal_org(
+                self.github_host, self.organization, headers=jwt_headers
+            ):
                 url = f"{self.github_host}/users/{self.organization}/installation"
             headers = {"Authorization": f"Bearer {jwt_token}"}
             response = await self.client.get(url, headers=headers)

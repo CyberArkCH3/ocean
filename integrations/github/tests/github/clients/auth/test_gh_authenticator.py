@@ -194,11 +194,16 @@ class TestGithubAuthenticator:
         ):
             installation_id = await github_auth._fetch_installation_id(mock_jwt_token)
 
-            mock_is_personal.assert_called_once()
+            jwt_headers = {"Authorization": f"Bearer {mock_jwt_token}"}
+            mock_is_personal.assert_called_once_with(
+                github_auth.github_host,
+                github_auth.organization,
+                headers=jwt_headers,
+            )
 
             expected_url = f"{github_auth.github_host}/orgs/{github_auth.organization}/installation"
             mock_client.get.assert_called_once_with(
-                expected_url, headers={"Authorization": f"Bearer {mock_jwt_token}"}
+                expected_url, headers=jwt_headers
             )
 
             assert installation_id == mock_installation_id
@@ -230,11 +235,16 @@ class TestGithubAuthenticator:
         ):
             installation_id = await github_auth._fetch_installation_id(mock_jwt_token)
 
-            mock_is_personal.assert_called_once()
+            jwt_headers = {"Authorization": f"Bearer {mock_jwt_token}"}
+            mock_is_personal.assert_called_once_with(
+                github_auth.github_host,
+                github_auth.organization,
+                headers=jwt_headers,
+            )
 
             expected_url = f"{github_auth.github_host}/users/{github_auth.organization}/installation"
             mock_client.get.assert_called_once_with(
-                expected_url, headers={"Authorization": f"Bearer {mock_jwt_token}"}
+                expected_url, headers=jwt_headers
             )
 
             assert installation_id == mock_installation_id

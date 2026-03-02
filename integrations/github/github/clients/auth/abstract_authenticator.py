@@ -105,10 +105,15 @@ class AbstractGitHubAuthenticator(ABC):
         return self._http_client
 
     @cache_coroutine_result()
-    async def is_personal_org(self, github_host: str, organization: str) -> bool:
+    async def is_personal_org(
+        self, github_host: str, organization: str, **kwargs: Any
+    ) -> bool:
         try:
             url = f"{github_host}/users/{organization}"
-            response = await self.client.get(url)
+            headers = kwargs.get("headers")
+            response = await self.client.get(
+                url, **({"headers": headers} if headers else {})
+            )
             response.raise_for_status()
             user_data = response.json()
             return user_data["type"] == "User"
